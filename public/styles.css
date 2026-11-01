@@ -419,6 +419,8 @@ h2.section-title i { color: var(--accent); font-style: normal; }
 .seeds .seed { color: var(--muted); font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .seeds em { color: var(--muted); font-size: 13px; font-style: normal; font-weight: 400; }
 .winner-action { margin: 0 0 18px; }
+.name em { display: block; color: var(--muted); font-size: 11px; font-style: normal; font-weight: 400; }
+.tournament-actions { margin-top: 0; }
 .stage-format { margin-left: auto; color: var(--muted); font-size: 12px; }
 .match:disabled { cursor: default; opacity: 0.75; }
 .team.open { color: var(--muted); font-size: 13px; font-weight: 500; }

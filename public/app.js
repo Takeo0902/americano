@@ -1,5 +1,8 @@
 (function () {
-  const { maxCourts, isFair, gamesPerPlayer, recommendedRounds, generateSchedule, standings } = window.Americano;
+  const {
+    maxCourts, isFair, gamesPerPlayer, recommendedRounds, generateSchedule, replanSchedule, keepPlayedRounds,
+    lastPlayedRound, equalGamesAfter, scheduleStats, standings,
+  } = window.Americano;
   const { buildTeams, buildBracket, decideMatch, resolveBracket, pruneResults, placements } = window.AmericanoFinals;
 
   const STORAGE_KEY = 'americano.v1';
@@ -24,6 +27,7 @@
     : state.tournament ? 'spielplan' : 'spieler';
   let scoreDraft = null;
   let setsDraft = null;
+  let editDraft = null;
   let pendingConfirm = null;
 
   function load() {
@@ -145,25 +149,175 @@
 
   /* ---------- Laufendes Turnier ---------- */
 
-  function tournamentPlayersHtml() {
+  const inactivePlayers = () => state.tournament.inactive || [];
+
+  const activePlayers = () =>
+    state.tournament.players.map((_, i) => i).filter((i) => !inactivePlayers().includes(i));
+
+  function ensureEditDraft() {
+    if (editDraft) return editDraft;
     const { players, courts, points, schedule } = state.tournament;
-    const rows = players
-      .map((name, i) => `
-        <li class="player-row locked">
+    editDraft = {
+      entries: activePlayers().map((index) => ({ index, name: players[index] })),
+      courts,
+      points,
+      rounds: schedule.rounds.length,
+    };
+    return editDraft;
+  }
+
+  function editConfig() {
+    const draft = ensureEditDraft();
+    const { players, courts, points, schedule, results } = state.tournament;
+    const entries = draft.entries.filter((entry) => entry.name.trim());
+    const lower = entries.map((entry) => entry.name.trim().toLowerCase());
+    const duplicates = entries.filter((_, i) => lower.indexOf(lower[i]) !== i).map((entry) => entry.name.trim());
+    const count = entries.length;
+    const limit = maxCourts(count) || 1;
+    const editCourts = Math.min(draft.courts, limit);
+    const minRounds = Math.max(1, lastPlayedRound(results) + 1);
+    const rounds = Math.max(draft.rounds, minRounds);
+
+    const kept = entries.filter((entry) => entry.index !== null).map((entry) => entry.index);
+    const removed = activePlayers().filter((p) => !kept.includes(p));
+    const roster = removed.length > 0 || entries.some((entry) => entry.index === null);
+    const structural = roster || editCourts !== courts || rounds !== schedule.rounds.length;
+    const renamed = entries.some((entry) => entry.index !== null && entry.name.trim() !== players[entry.index]);
+    return {
+      entries, duplicates, count, limit, courts: editCourts, points: draft.points, rounds, minRounds, kept, removed, structural,
+      changed: structural || renamed || draft.points !== points,
+      valid: count >= MIN_PLAYERS && duplicates.length === 0,
+    };
+  }
+
+  /* Spiele pro Person aus den Runden, die bestehen bleiben. Neue beginnen bei 0. */
+  function editGamesHint(config) {
+    const { players, schedule, results } = state.tournament;
+    const kept = keepPlayedRounds(schedule, results, [...config.removed, ...inactivePlayers()]);
+    const games = scheduleStats({ rounds: kept.rounds }, players.length).games;
+    const played = config.entries.map((entry) => (entry.index === null ? 0 : games[entry.index]));
+    const equalAt = (rounds) => equalGamesAfter(played, config.courts, Math.max(0, rounds - kept.rounds.length));
+    const pause = config.count - config.courts * 4;
+    const pauseText = pause ? ` Pro Runde pausieren ${pause}.` : '';
+    const equal = equalAt(config.rounds);
+    if (equal !== null) return `<p class="note">Alle kommen auf ${plural(equal, 'Spiel', 'Spiele')}.${pauseText}</p>`;
+    let better = config.rounds + 1;
+    while (better <= MAX_ROUNDS && equalAt(better) === null) better++;
+    const suggestion = better <= MAX_ROUNDS ? ` Gleich viele Spiele gibt es bei ${better} Runden.` : '';
+    return `<p class="note warn">Nicht alle kommen auf gleich viele Spiele, die Tabelle wertet dann nach Ø pro Spiel.${suggestion}${pauseText}</p>`;
+  }
+
+  function editOptionsHtml() {
+    const config = editConfig();
+    if (config.count < MIN_PLAYERS) {
+      const missing = MIN_PLAYERS - config.count;
+      return `<div class="actions"><button type="button" class="btn primary" disabled>Noch ${plural(missing, 'Name', 'Namen')} eintragen</button></div>`;
+    }
+    const courtChips = Array.from({ length: config.limit }, (_, i) => i + 1)
+      .map((c) => `<button type="button" class="chip" data-action="edit-courts" data-value="${c}" aria-pressed="${c === config.courts}">${c}</button>`)
+      .join('');
+    const points = [...new Set([...POINT_OPTIONS, config.points])].sort((a, b) => a - b);
+    const pointChips = points
+      .map((p) => `<button type="button" class="chip" data-action="edit-points" data-value="${p}" aria-pressed="${p === config.points}">${p}</button>`)
+      .join('');
+    const playedText = lastPlayedRound(state.tournament.results) >= 0
+      ? `<p class="note">Runden mit Resultaten bleiben erhalten, deshalb mindestens ${plural(config.minRounds, 'Runde', 'Runden')}.</p>`
+      : '';
+    const duplicate = config.duplicates.length
+      ? `<p class="note warn">«${esc(config.duplicates[0])}» kommt doppelt vor. Bitte die Namen unterscheidbar machen.</p>`
+      : '';
+    const effect = config.structural
+      ? `<p class="note">Noch nicht gespielte Runden werden neu ausgelost.${state.tournament.playoff ? ' Die Finalrunde wird zurückgesetzt.' : ''}</p>`
+      : '';
+    const reset = config.changed
+      ? '<button type="button" class="btn" data-action="edit-reset">Änderungen verwerfen</button>'
+      : '';
+    return `
+      <h2>Courts</h2>
+      <div class="chips">${courtChips}</div>
+      <h2>Punkte pro Spiel</h2>
+      <div class="chips">${pointChips}</div>
+      <p class="note">Gilt für neue Resultate. Eingetragene Spiele behalten ihren Punktestand.</p>
+      <h2>Runden</h2>
+      <div class="stepper">
+        <button type="button" data-action="edit-rounds" data-value="-1" aria-label="Eine Runde weniger" ${config.rounds <= config.minRounds ? 'disabled' : ''}>−</button>
+        <output>${config.rounds}</output>
+        <button type="button" data-action="edit-rounds" data-value="1" aria-label="Eine Runde mehr" ${config.rounds >= MAX_ROUNDS ? 'disabled' : ''}>+</button>
+      </div>
+      ${playedText}
+      ${editGamesHint(config)}
+      ${duplicate}
+      ${effect}
+      <div class="actions">
+        <button type="button" class="btn primary" data-action="edit-apply" ${config.valid && config.changed ? '' : 'disabled'}>Änderungen übernehmen</button>
+        ${reset}
+      </div>`;
+  }
+
+  function refreshEditOptions() {
+    const options = document.getElementById('edit-options');
+    if (options) options.innerHTML = editOptionsHtml();
+  }
+
+  function tournamentPlayersHtml() {
+    const draft = ensureEditDraft();
+    const { courts, points, schedule } = state.tournament;
+    const rows = draft.entries
+      .map((entry, i) => `
+        <li class="player-row">
           <span class="nr">${i + 1}</span>
-          <input id="player-${i}" data-rename="${i}" value="${esc(name)}" maxlength="18"
-            autocomplete="off" autocapitalize="words" aria-label="Name Spieler ${i + 1} ändern">
+          <input id="player-${i}" data-edit-name="${i}" value="${esc(entry.name)}" maxlength="18"
+            placeholder="Name" autocomplete="off" autocapitalize="words" aria-label="Name Spieler ${i + 1}">
+          <button type="button" class="remove" data-action="edit-remove" data-value="${i}" aria-label="Spieler ${i + 1} entfernen">×</button>
         </li>`)
       .join('');
     return `
       ${title('Spieler')}
-      <p class="lead">${players.length} Spieler · ${plural(courts, 'Court', 'Courts')} · ${points} Punkte · ${plural(schedule.rounds.length, 'Runde', 'Runden')}</p>
+      <p class="lead">${activePlayers().length} Spieler · ${plural(courts, 'Court', 'Courts')} · ${points} Punkte · ${plural(schedule.rounds.length, 'Runde', 'Runden')}</p>
       <ul class="players">${rows}</ul>
-      <p class="note">Namen kannst du jederzeit korrigieren. Für andere Spieler oder Einstellungen startest du ein neues Turnier.</p>
-      <div class="actions">
+      ${draft.entries.length < MAX_PLAYERS ? '<button type="button" class="add-player" data-action="edit-add">+ Spieler hinzufügen</button>' : ''}
+      <p class="note">Wer ausscheidet, behält die bisherigen Punkte in der Tabelle und spielt nicht mehr weiter.</p>
+      <div id="edit-options"></div>
+      <h2>Turnier</h2>
+      <div class="actions tournament-actions">
         <button type="button" class="btn" data-action="redraw">Neu auslosen</button>
         <button type="button" class="btn danger" data-action="new">Neues Turnier</button>
       </div>`;
+  }
+
+  /* Übernimmt die Änderungen. Gespielte Runden bleiben, der Rest wird neu ausgelost. */
+  function applyEdit() {
+    const config = editConfig();
+    const tournament = state.tournament;
+    const { players } = tournament;
+    const active = [];
+    for (const entry of config.entries) {
+      const name = entry.name.trim();
+      let index = entry.index;
+      if (index === null) {
+        /* Wer zurückkommt, spielt mit den bisherigen Punkten weiter. */
+        index = inactivePlayers().find((p) => players[p].toLowerCase() === name.toLowerCase());
+        if (index === undefined) index = players.push(name) - 1;
+      }
+      players[index] = name;
+      active.push(index);
+    }
+    if (config.structural) {
+      const replanned = replanSchedule(tournament.schedule, tournament.results, {
+        playerCount: players.length, active, courts: config.courts, rounds: config.rounds, seed: newSeed(),
+      });
+      tournament.schedule = replanned.schedule;
+      tournament.results = replanned.results;
+      tournament.playoff = null;
+      tournament.courts = config.courts;
+    }
+    tournament.inactive = players.map((_, i) => i).filter((i) => !active.includes(i));
+    tournament.points = config.points;
+    state.sortBy = null;
+    editDraft = null;
+    save();
+    if (config.structural) setTab('spielplan');
+    else render();
   }
 
   const roundDone = (r) =>
@@ -269,9 +423,15 @@
     return state.tournament.playoff ? finalsBracketHtml() : finalsOfferHtml();
   }
 
-  function finalsOfferHtml() {
+  function activeRanking() {
     const { players, schedule, results } = state.tournament;
-    const rows = standings(players, schedule, results, sortMode());
+    return standings(players, schedule, results, sortMode(), inactivePlayers())
+      .filter((row) => !inactivePlayers().includes(row.index));
+  }
+
+  function finalsOfferHtml() {
+    const { players } = state.tournament;
+    const rows = activeRanking();
     const { teams, leftover } = buildTeams(rows.map((row) => row.index));
     const bestOf = state.finalsBestOf || 1;
     const teamRows = teams
@@ -405,8 +565,10 @@
 
   function sortMode() {
     if (state.sortBy) return state.sortBy;
-    const { players, courts, schedule } = state.tournament;
-    return isFair(players.length, courts, schedule.rounds.length) ? 'points' : 'avg';
+    const { players, schedule } = state.tournament;
+    const { games } = scheduleStats(schedule, players.length);
+    const counts = activePlayers().map((p) => games[p]);
+    return Math.min(...counts) === Math.max(...counts) ? 'points' : 'avg';
   }
 
   const signed = (value) => (value > 0 ? `+${value}` : `${value}`);
@@ -432,13 +594,13 @@
     }
     const { players, schedule, results } = state.tournament;
     const mode = sortMode();
-    const rows = standings(players, schedule, results, mode);
+    const rows = standings(players, schedule, results, mode, inactivePlayers());
     const lastHead = mode === 'avg' ? 'Ø' : 'Pkt';
     const body = rows
       .map((row) => `
         <tr class="${row.rank === 1 && row.games ? 'leader' : ''}">
           <td>${row.rank}</td>
-          <td class="name">${esc(row.name)}</td>
+          <td class="name">${esc(row.name)}${inactivePlayers().includes(row.index) ? ' <em>ausgeschieden</em>' : ''}</td>
           <td>${row.games}</td>
           <td>${row.wins}</td>
           <td>${row.draws}</td>
@@ -481,6 +643,7 @@
     if (tab === 'spieler') {
       view.innerHTML = state.tournament ? tournamentPlayersHtml() : setupHtml();
       refreshSetupOptions();
+      refreshEditOptions();
     } else if (tab === 'spielplan') {
       view.innerHTML = scheduleHtml();
     } else {
@@ -494,6 +657,7 @@
 
   function setTab(next) {
     tab = next;
+    editDraft = null;
     try {
       history.replaceState(null, '', `#${next}`);
     } catch {
@@ -514,14 +678,15 @@
 
   function openScore(r, m) {
     const saved = state.tournament.results[`${r}-${m}`];
-    scoreDraft = { r, m, active: 'a', a: saved ? saved.a : null, saved: Boolean(saved) };
+    const total = saved ? saved.a + saved.b : state.tournament.points;
+    scoreDraft = { r, m, total, active: 'a', a: saved ? saved.a : null, saved: Boolean(saved) };
     renderScoreSheet();
     scoreSheet.showModal();
   }
 
   function renderScoreSheet() {
-    const { players, points, schedule } = state.tournament;
-    const { r, m, active, a, saved } = scoreDraft;
+    const { players, schedule } = state.tournament;
+    const { r, m, total: points, active, a, saved } = scoreDraft;
     const match = schedule.rounds[r].matches[m];
     const scoreOf = (side) => (a === null ? '–' : side === 'a' ? a : points - a);
     const teamButton = (side, team) => `
@@ -664,6 +829,8 @@
 
   function redraw() {
     const tournament = state.tournament;
+    tournament.players = activePlayers().map((p) => tournament.players[p]);
+    tournament.inactive = [];
     tournament.schedule = generateSchedule(
       tournament.players.length, tournament.courts, tournament.schedule.rounds.length, newSeed()
     );
@@ -675,7 +842,7 @@
 
   function backToSetup() {
     const { players, courts, points, schedule } = state.tournament;
-    state.draft = { names: players.slice(), courts, points, rounds: schedule.rounds.length };
+    state.draft = { names: activePlayers().map((p) => players[p]), courts, points, rounds: schedule.rounds.length };
     state.tournament = null;
     state.sortBy = null;
     save();
@@ -726,7 +893,7 @@
         redraw();
         return;
       }
-      askConfirm('Neu auslosen?', 'Alle eingetragenen Resultate werden gelöscht. Die Spieler bleiben gleich.', 'Neu auslosen', redraw);
+      askConfirm('Neu auslosen?', 'Alle eingetragenen Resultate und die Finalrunde werden gelöscht. Die Spieler bleiben gleich.', 'Neu auslosen', redraw);
     },
     new() {
       askConfirm('Neues Turnier starten?', 'Der Spielplan und alle Resultate werden gelöscht. Die Namen bleiben eingetragen.', 'Neues Turnier', backToSetup);
@@ -748,15 +915,48 @@
         }
       );
     },
+    'edit-add'() {
+      ensureEditDraft().entries.push({ index: null, name: '' });
+      render();
+      document.getElementById(`player-${editDraft.entries.length - 1}`).focus();
+    },
+    'edit-remove'({ value }) {
+      ensureEditDraft().entries.splice(Number(value), 1);
+      render();
+    },
+    'edit-courts'({ value }) {
+      ensureEditDraft().courts = Number(value);
+      refreshEditOptions();
+    },
+    'edit-points'({ value }) {
+      ensureEditDraft().points = Number(value);
+      refreshEditOptions();
+    },
+    'edit-rounds'({ value }) {
+      const next = editConfig().rounds + Number(value);
+      ensureEditDraft().rounds = Math.min(MAX_ROUNDS, next);
+      refreshEditOptions();
+    },
+    'edit-reset'() {
+      editDraft = null;
+      render();
+    },
+    'edit-apply'() {
+      const config = editConfig();
+      if (!config.valid) return;
+      if (config.structural && state.tournament.playoff) {
+        askConfirm('Finalrunde zurücksetzen?', 'Die Teams der Finalrunde stammen aus dem bisherigen Spielplan. Mit diesen Änderungen wird sie gelöscht.', 'Übernehmen und zurücksetzen', applyEdit);
+        return;
+      }
+      applyEdit();
+    },
     'finals-format'({ value }) {
       state.finalsBestOf = Number(value);
       save();
       render();
     },
     'finals-start'() {
-      const { players, schedule, results } = state.tournament;
-      const rows = standings(players, schedule, results, sortMode());
-      const { teams, leftover } = buildTeams(rows.map((row) => row.index));
+      const { teams, leftover } = buildTeams(activeRanking().map((row) => row.index));
       state.tournament.playoff = { teams, leftover, bestOf: state.finalsBestOf || 1, results: {} };
       save();
       render();
@@ -808,14 +1008,14 @@
     },
     pick({ value }) {
       const picked = Number(value);
-      scoreDraft.a = scoreDraft.active === 'a' ? picked : state.tournament.points - picked;
+      scoreDraft.a = scoreDraft.active === 'a' ? picked : scoreDraft.total - picked;
       renderScoreSheet();
       scoreSheet.querySelector(`[data-action="pick"][data-value="${value}"]`).focus();
     },
     'save-score'() {
       const { r, m, a } = scoreDraft;
       const wasFinished = groupFinished();
-      state.tournament.results[`${r}-${m}`] = { a, b: state.tournament.points - a };
+      state.tournament.results[`${r}-${m}`] = { a, b: scoreDraft.total - a };
       save();
       scoreSheet.close();
       render();
@@ -860,23 +1060,17 @@
   });
 
   document.addEventListener('input', (event) => {
-    const { name, rename } = event.target.dataset;
+    const { name, editName } = event.target.dataset;
     if (name !== undefined) {
       const before = draftConfig().count;
       state.draft.names[Number(name)] = event.target.value;
       if (draftConfig().count !== before) state.draft.rounds = null;
       save();
       refreshSetupOptions();
-    } else if (rename !== undefined && event.target.value.trim()) {
-      state.tournament.players[Number(rename)] = event.target.value.trim();
-      save();
+    } else if (editName !== undefined) {
+      ensureEditDraft().entries[Number(editName)].name = event.target.value;
+      refreshEditOptions();
     }
-  });
-
-  /* Leerer Name im laufenden Turnier: beim Verlassen den alten wieder anzeigen. */
-  document.addEventListener('focusout', (event) => {
-    const { rename } = event.target.dataset;
-    if (rename !== undefined) event.target.value = state.tournament.players[Number(rename)];
   });
 
   document.addEventListener('keydown', (event) => {
