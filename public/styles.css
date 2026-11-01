@@ -384,6 +384,71 @@ tr.leader td { background: var(--surface-2); }
 .points-grid button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .sheet .actions { margin-top: 16px; }
 
+/* ---------- Finalrunde ---------- */
+.finals { margin-top: 36px; padding-top: 4px; border-top: 1px solid var(--line); scroll-margin-top: calc(env(safe-area-inset-top, 0px) + 60px); }
+h2.section-title {
+  margin: 20px 0 8px;
+  color: var(--text);
+  font-size: 24px;
+  font-weight: 900;
+  letter-spacing: -0.4px;
+  text-transform: none;
+}
+h2.section-title i { color: var(--accent); font-style: normal; }
+.seeds {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.seeds li {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  align-items: center;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 15px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.seeds li:last-child { border-bottom: 0; }
+.seeds .seed { color: var(--muted); font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.seeds em { color: var(--muted); font-size: 13px; font-style: normal; font-weight: 400; }
+.winner-action { margin: 0 0 18px; }
+.stage-format { margin-left: auto; color: var(--muted); font-size: 12px; }
+.match:disabled { cursor: default; opacity: 0.75; }
+.team.open { color: var(--muted); font-size: 13px; font-weight: 500; }
+.score-wait { color: var(--muted); font-size: 13px; }
+.set-line {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.set-board { display: grid; align-items: center; gap: 8px 6px; }
+.set-head { color: var(--muted); font-size: 11px; font-weight: 600; text-align: center; }
+.set-team { display: grid; gap: 2px; min-width: 0; font-size: 14px; font-weight: 600; }
+.set-team span { overflow-wrap: anywhere; line-height: 1.2; }
+.set-cell {
+  height: 52px;
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-2);
+  font-size: 22px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.set-cell.active { border-color: var(--accent); }
+.set-cell:disabled { opacity: 0.35; cursor: default; }
+.sheet-hint.warn { color: var(--loss); }
+.sets-grid { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+.sets-grid button { min-width: 0; }
+
 @media (prefers-reduced-motion: no-preference) {
   .progress .bar span { transition: width 0.25s ease; }
 }

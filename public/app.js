@@ -1,5 +1,6 @@
 (function () {
   const { maxCourts, isFair, gamesPerPlayer, recommendedRounds, generateSchedule, standings } = window.Americano;
+  const { buildTeams, buildBracket, decideMatch, resolveBracket, pruneResults, placements } = window.AmericanoFinals;
 
   const STORAGE_KEY = 'americano.v1';
   const MIN_PLAYERS = 4;
@@ -22,6 +23,7 @@
     ? location.hash.slice(1)
     : state.tournament ? 'spielplan' : 'spieler';
   let scoreDraft = null;
+  let setsDraft = null;
   let pendingConfirm = null;
 
   function load() {
@@ -181,6 +183,11 @@
     };
   }
 
+  function groupFinished() {
+    const { total, played } = matchTotals();
+    return total > 0 && played === total;
+  }
+
   function teamHtml(players, team, side, lost) {
     return `<span class="team team-${side}${lost ? ' lost' : ''}">${team.map((p) => `<span>${esc(players[p])}</span>`).join('')}</span>`;
   }
@@ -238,7 +245,162 @@
         ${played} von ${total} Spielen eingetragen
         <div class="bar"><span style="width:${total ? (played / total) * 100 : 0}%"></span></div>
       </div>
-      ${rounds}`;
+      ${rounds}
+      ${finalsHtml()}`;
+  }
+
+  /* ---------- Finalrunde ---------- */
+
+  const FORMAT_LABELS = {
+    3: 'Halbfinale',
+    4: 'Halbfinale',
+    5: 'Viertelfinale und Halbfinale',
+    6: 'Viertelfinale, Halbfinale und Spiel um Platz 5',
+  };
+
+  const BYE_NOTES = {
+    3: 'Team 1 steht direkt im Finale.',
+    5: 'Die Teams 1, 2 und 3 steigen im Halbfinale ein.',
+    6: 'Die Teams 1 und 2 steigen im Halbfinale ein.',
+  };
+
+  function finalsHtml() {
+    if (!groupFinished()) return '';
+    return state.tournament.playoff ? finalsBracketHtml() : finalsOfferHtml();
+  }
+
+  function finalsOfferHtml() {
+    const { players, schedule, results } = state.tournament;
+    const rows = standings(players, schedule, results, sortMode());
+    const { teams, leftover } = buildTeams(rows.map((row) => row.index));
+    const bestOf = state.finalsBestOf || 1;
+    const teamRows = teams
+      .map((team, i) => `<li><span class="seed">Team ${i + 1}</span><span>${esc(team.map((p) => players[p]).join(' & '))}</span></li>`)
+      .join('');
+    const tied = rows.some((row, i) => i > 0 && rows[i - 1].rank === row.rank);
+    const notes = [
+      leftover !== null ? `${esc(players[leftover])} hat kein Team und belegt Platz ${teams.length + 1}.` : '',
+      BYE_NOTES[teams.length] || '',
+      tied ? 'Bei völligem Gleichstand entscheidet das Alphabet über die Teams.' : '',
+    ].filter(Boolean);
+    const format = teams.length > 2
+      ? `
+        <h2>${FORMAT_LABELS[teams.length]}</h2>
+        <div class="chips">
+          <button type="button" class="chip" data-action="finals-format" data-value="1" aria-pressed="${bestOf === 1}">1 Satz</button>
+          <button type="button" class="chip" data-action="finals-format" data-value="3" aria-pressed="${bestOf === 3}">2 Gewinnsätze</button>
+        </div>`
+      : '';
+    return `
+      <section id="finals" class="finals">
+        <h2 class="section-title">Plätze ausspielen<i>.</i></h2>
+        <p class="lead">Alle Runden sind gespielt. Aus der Rangliste entstehen feste Teams, die alle Plätze ausspielen.</p>
+        <ol class="seeds">${teamRows}</ol>
+        ${notes.map((note) => `<p class="note">${note}</p>`).join('')}
+        ${format}
+        <p class="note">${teams.length >= 4 ? 'Spiel um Platz 3 und Finale gehen' : 'Das Finale geht'} immer über 2 Gewinnsätze.</p>
+        <div class="actions">
+          <button type="button" class="btn primary" data-action="finals-start">Finalrunde starten</button>
+        </div>
+      </section>`;
+  }
+
+  function currentBracket() {
+    const { playoff } = state.tournament;
+    return buildBracket(playoff.teams.length, playoff.bestOf);
+  }
+
+  const seedNames = (seed) =>
+    state.tournament.playoff.teams[seed - 1].map((p) => state.tournament.players[p]);
+
+  function sourceLabel(source, bracket) {
+    const earlier = bracket.find((match) => match.id === (source.winner || source.loser));
+    return `${source.winner ? 'Sieger' : 'Verlierer'} ${earlier.label}`;
+  }
+
+  function finalsTeamHtml(seed, source, side, lost, bracket) {
+    if (!seed) return `<span class="team team-${side} open"><span>${esc(sourceLabel(source, bracket))}</span></span>`;
+    return `<span class="team team-${side}${lost ? ' lost' : ''}">${seedNames(seed).map((name) => `<span>${esc(name)}</span>`).join('')}</span>`;
+  }
+
+  function finalsMatchHtml(row, bracket) {
+    const ready = row.teamA && row.teamB;
+    const heading = [
+      row.label === row.stage ? '' : row.label,
+      ready ? `Team ${row.teamA} gegen Team ${row.teamB}` : '',
+    ].filter(Boolean).join(' · ');
+    let score = ready ? '<span class="score-empty">Eintragen</span>' : '<span class="score-wait">offen</span>';
+    let setLine = '';
+    if (row.result) {
+      const shown = row.bestOf === 1 ? row.result.sets[0] : row.wins;
+      score = `<span class="score">${shown[0]}<i>:</i>${shown[1]}</span>`;
+      if (row.bestOf > 1) setLine = `<span class="set-line">${row.result.sets.map((set) => `${set[0]}:${set[1]}`).join(' · ')}</span>`;
+    }
+    return `
+      <button type="button" class="match${row.result ? ' played' : ''}" data-action="finals-score" data-value="${row.id}" ${ready ? '' : 'disabled'}>
+        ${heading ? `<span class="match-court">${esc(heading)}</span>` : ''}
+        ${finalsTeamHtml(row.teamA, row.a, 'a', row.winner === 'b', bracket)}
+        ${score}
+        ${finalsTeamHtml(row.teamB, row.b, 'b', row.winner === 'a', bracket)}
+        ${setLine}
+      </button>`;
+  }
+
+  function finalsBracketHtml() {
+    const bracket = currentBracket();
+    const rows = resolveBracket(bracket, state.tournament.playoff.results);
+    const firstOpen = rows.find((row) => !row.winner);
+    const stages = [...new Set(rows.map((row) => row.stage))];
+    const sections = stages
+      .map((stage) => {
+        const matches = rows.filter((row) => row.stage === stage);
+        const done = matches.every((row) => row.winner);
+        const current = firstOpen && firstOpen.stage === stage;
+        const pill = current
+          ? '<span class="pill now">Jetzt</span>'
+          : done ? '<span class="pill">Fertig</span>' : '';
+        return `
+          <section class="round${current ? ' current' : ''}">
+            <div class="round-head">
+              <h2>${esc(stage)}</h2>${pill}
+              <span class="stage-format">${matches[0].bestOf === 1 ? '1 Satz' : '2 Gewinnsätze'}</span>
+            </div>
+            <div class="matches">${matches.map((row) => finalsMatchHtml(row, bracket)).join('')}</div>
+          </section>`;
+      })
+      .join('');
+    return `
+      <section id="finals" class="finals">
+        <h2 class="section-title">Finalrunde<i>.</i></h2>
+        ${sections}
+        <div class="actions">
+          <button type="button" class="btn danger" data-action="finals-reset">Finalrunde zurücksetzen</button>
+        </div>
+      </section>`;
+  }
+
+  function finalStandingHtml() {
+    const { playoff, players } = state.tournament;
+    if (!playoff) return '';
+    const bracket = currentBracket();
+    const rows = placements(bracket, playoff.results).map(({ place, seed }) => ({
+      place, name: seedNames(seed).join(' & '),
+    }));
+    if (playoff.leftover !== null) {
+      rows.push({ place: playoff.teams.length + 1, name: players[playoff.leftover], note: 'ohne Team' });
+    }
+    const finished = resolveBracket(bracket, playoff.results).every((row) => row.winner);
+    const champion = finished
+      ? `<p class="winner">Turnier beendet: <b>${esc(rows[0].name)}</b> gewinnen die Finalrunde.</p>`
+      : '<p class="note">Die Finalrunde läuft. Weitere Plätze erscheinen hier, sobald sie feststehen.</p>';
+    const list = rows
+      .map((row) => `
+        <li><span class="seed">${row.place}.</span><span>${esc(row.name)}${row.note ? ` <em>${row.note}</em>` : ''}</span></li>`)
+      .join('');
+    return `
+      ${champion}
+      ${rows.length ? `<h2>Endstand</h2><ol class="seeds">${list}</ol>` : ''}
+      <h2>Hauptrunde</h2>`;
   }
 
   function sortMode() {
@@ -251,11 +413,12 @@
   const signClass = (value) => (value > 0 ? 'pos' : value < 0 ? 'neg' : '');
 
   function winnerLine(rows) {
-    const { total, played } = matchTotals();
-    if (played < total) return '';
+    if (!groupFinished() || state.tournament.playoff) return '';
     const leaders = rows.filter((row) => row.rank === 1).map((row) => `<b>${esc(row.name)}</b>`);
     const verb = leaders.length > 1 ? 'gewinnen' : 'gewinnt';
-    return `<p class="winner">Turnier beendet: ${leaders.join(' und ')} ${verb} mit ${rows[0].points} Punkten.</p>`;
+    return `
+      <p class="winner">Alle Runden gespielt: ${leaders.join(' und ')} ${verb} mit ${rows[0].points} Punkten.</p>
+      <div class="actions winner-action"><button type="button" class="btn" data-tab="spielplan">Plätze ausspielen</button></div>`;
   }
 
   function tableHtml() {
@@ -286,6 +449,7 @@
       .join('');
     return `
       ${title('Tabelle')}
+      ${finalStandingHtml()}
       ${winnerLine(rows)}
       <div class="chips" role="group" aria-label="Rangliste nach">
         <button type="button" class="chip" data-action="sort" data-value="points" aria-pressed="${mode === 'points'}">Punkte</button>
@@ -342,7 +506,8 @@
 
   function scrollToCurrentRound() {
     const current = currentRound();
-    if (current > 0) document.getElementById(`round-${current}`).scrollIntoView();
+    const target = document.getElementById(current < 0 ? 'finals' : `round-${current}`);
+    if (target && current !== 0) target.scrollIntoView();
   }
 
   /* ---------- Resultat eintragen ---------- */
@@ -379,6 +544,89 @@
         ${saved ? '<button type="button" class="btn danger" data-action="clear-score">Resultat löschen</button>' : ''}
         <button type="button" class="btn" data-action="close-sheet">Abbrechen</button>
       </div>`;
+  }
+
+  /* ---------- Sätze eintragen ---------- */
+
+  function openSets(id) {
+    const match = currentBracket().find((entry) => entry.id === id);
+    const saved = state.tournament.playoff.results[id];
+    const sets = Array.from({ length: match.bestOf }, (_, i) => {
+      const set = saved && saved.sets[i];
+      return set ? set.slice() : [null, null];
+    });
+    setsDraft = { id, sets, set: 0, side: 0, saved: Boolean(saved) };
+    renderSetsSheet();
+    scoreSheet.showModal();
+  }
+
+  /* Satz 3 gibt es erst bei 1:1, Satz 2 erst nach Satz 1. */
+  function setReachable(bestOf, sets, index) {
+    if (index === 0) return true;
+    const before = decideMatch(bestOf, sets.slice(0, index));
+    return !before.winner && !before.tied && before.sets.length === index;
+  }
+
+  function renderSetsSheet() {
+    const { id, sets, set, side, saved } = setsDraft;
+    const bracket = currentBracket();
+    const row = resolveBracket(bracket, state.tournament.playoff.results).find((entry) => entry.id === id);
+    const decision = decideMatch(row.bestOf, sets);
+    const cell = (setIndex, sideIndex) => {
+      const reachable = setReachable(row.bestOf, sets, setIndex);
+      const value = sets[setIndex][sideIndex];
+      const active = set === setIndex && side === sideIndex;
+      return `<button type="button" class="set-cell${active ? ' active' : ''}" data-action="set-cell" data-set="${setIndex}" data-side="${sideIndex}"
+        aria-label="Satz ${setIndex + 1}, Spiele ${sideIndex === 0 ? 'oben' : 'unten'}" ${reachable ? '' : 'disabled'}>${reachable && value !== null ? value : '–'}</button>`;
+    };
+    const line = (seed, sideIndex) => `
+      <span class="set-team">${seedNames(seed).map((name) => `<span>${esc(name)}</span>`).join('')}</span>
+      ${sets.map((_, setIndex) => cell(setIndex, sideIndex)).join('')}`;
+    const headers = sets.map((_, i) => `<span class="set-head">Satz ${i + 1}</span>`).join('');
+    const grid = Array.from({ length: 8 }, (_, value) =>
+      `<button type="button" data-action="set-pick" data-value="${value}" aria-pressed="${sets[set][side] === value}">${value}</button>`
+    ).join('');
+    let status = 'Tippe auf ein Feld und wähle die gewonnenen Spiele.';
+    if (decision.tied) status = 'Ein Satz kann nicht unentschieden enden.';
+    else if (decision.winner) {
+      const seed = decision.winner === 'a' ? row.teamA : row.teamB;
+      status = `Sieger: ${seedNames(seed).join(' & ')}`;
+    }
+    scoreSheet.innerHTML = `
+      <h3 id="score-title">${esc(row.label)}</h3>
+      <div class="set-board" style="grid-template-columns:minmax(0,1fr) repeat(${sets.length},48px)">
+        <span></span>${headers}
+        ${line(row.teamA, 0)}
+        ${line(row.teamB, 1)}
+      </div>
+      <p class="sheet-hint${decision.tied ? ' warn' : ''}">${esc(status)}</p>
+      <div class="points-grid sets-grid">${grid}</div>
+      <div class="actions">
+        <button type="button" class="btn primary" data-action="save-sets" ${decision.winner ? '' : 'disabled'}>Speichern</button>
+        ${saved ? '<button type="button" class="btn danger" data-action="clear-sets">Resultat löschen</button>' : ''}
+        <button type="button" class="btn" data-action="close-sheet">Abbrechen</button>
+      </div>`;
+  }
+
+  /* Ändert ein Resultat. Spiele, deren Teams dadurch wechseln, werden nach Rückfrage gelöscht. */
+  function applyFinalsResults(next) {
+    const pruned = pruneResults(currentBracket(), next);
+    const apply = () => {
+      state.tournament.playoff.results = pruned.results;
+      save();
+      render();
+    };
+    scoreSheet.close();
+    if (pruned.removed.length === 0) {
+      apply();
+      return;
+    }
+    askConfirm(
+      'Folgespiele löschen?',
+      `Durch die Änderung spielen andere Teams weiter. ${plural(pruned.removed.length, 'bereits eingetragenes Folgespiel wird', 'bereits eingetragene Folgespiele werden')} gelöscht.`,
+      'Ändern und löschen',
+      apply
+    );
   }
 
   function askConfirm(heading, text, label, onConfirm) {
@@ -420,6 +668,7 @@
       tournament.players.length, tournament.courts, tournament.schedule.rounds.length, newSeed()
     );
     tournament.results = {};
+    tournament.playoff = null;
     save();
     setTab('spielplan');
   }
@@ -483,7 +732,75 @@
       askConfirm('Neues Turnier starten?', 'Der Spielplan und alle Resultate werden gelöscht. Die Namen bleiben eingetragen.', 'Neues Turnier', backToSetup);
     },
     score({ r, m }) {
-      openScore(Number(r), Number(m));
+      if (!state.tournament.playoff) {
+        openScore(Number(r), Number(m));
+        return;
+      }
+      askConfirm(
+        'Finalrunde zurücksetzen?',
+        'Die Teams der Finalrunde stammen aus diesen Resultaten. Um ein Resultat zu ändern, wird die Finalrunde gelöscht.',
+        'Zurücksetzen und ändern',
+        () => {
+          state.tournament.playoff = null;
+          save();
+          render();
+          openScore(Number(r), Number(m));
+        }
+      );
+    },
+    'finals-format'({ value }) {
+      state.finalsBestOf = Number(value);
+      save();
+      render();
+    },
+    'finals-start'() {
+      const { players, schedule, results } = state.tournament;
+      const rows = standings(players, schedule, results, sortMode());
+      const { teams, leftover } = buildTeams(rows.map((row) => row.index));
+      state.tournament.playoff = { teams, leftover, bestOf: state.finalsBestOf || 1, results: {} };
+      save();
+      render();
+      document.getElementById('finals').scrollIntoView();
+    },
+    'finals-reset'() {
+      askConfirm('Finalrunde zurücksetzen?', 'Teams und Resultate der Finalrunde werden gelöscht. Die Hauptrunde bleibt erhalten.', 'Zurücksetzen', () => {
+        state.tournament.playoff = null;
+        save();
+        render();
+      });
+    },
+    'finals-score'({ value }) {
+      openSets(value);
+    },
+    'set-cell'({ set, side }) {
+      setsDraft.set = Number(set);
+      setsDraft.side = Number(side);
+      renderSetsSheet();
+    },
+    'set-pick'({ value }) {
+      const { id, sets, set, side } = setsDraft;
+      sets[set][side] = Number(value);
+      const { bestOf } = currentBracket().find((entry) => entry.id === id);
+      /* Weiter zum nächsten Feld, damit ein Satz mit zwei Tipps erfasst ist. */
+      if (side === 0) setsDraft.side = 1;
+      else if (set + 1 < sets.length && setReachable(bestOf, sets, set + 1)) {
+        setsDraft.set = set + 1;
+        setsDraft.side = 0;
+      }
+      renderSetsSheet();
+    },
+    'save-sets'() {
+      const { id, sets } = setsDraft;
+      const bracket = currentBracket();
+      const { playoff } = state.tournament;
+      const row = resolveBracket(bracket, playoff.results).find((entry) => entry.id === id);
+      const decision = decideMatch(row.bestOf, sets);
+      applyFinalsResults({ ...playoff.results, [id]: { teams: [row.teamA, row.teamB], sets: decision.sets } });
+    },
+    'clear-sets'() {
+      const next = { ...state.tournament.playoff.results };
+      delete next[setsDraft.id];
+      applyFinalsResults(next);
     },
     team({ value }) {
       scoreDraft.active = value;
@@ -497,10 +814,12 @@
     },
     'save-score'() {
       const { r, m, a } = scoreDraft;
+      const wasFinished = groupFinished();
       state.tournament.results[`${r}-${m}`] = { a, b: state.tournament.points - a };
       save();
       scoreSheet.close();
       render();
+      if (!wasFinished && groupFinished()) document.getElementById('finals').scrollIntoView();
     },
     'clear-score'() {
       delete state.tournament.results[`${scoreDraft.r}-${scoreDraft.m}`];

@@ -1,7 +1,7 @@
 /* Offline-Betrieb: zuerst aus dem Netz, ohne Netz aus dem Speicher. */
-const CACHE = 'americano-v1';
+const CACHE = 'americano-v2';
 const FILES = [
-  './', 'index.html', 'styles.css', 'app.js', 'schedule.js', 'manifest.webmanifest',
+  './', 'index.html', 'styles.css', 'app.js', 'schedule.js', 'finals.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
 ];
 
