@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>Americano Padel</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="claude:viewport-fit-sides" content="cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Americano">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <span class="wordmark">Americano<i>.</i></span>
+  </header>
+
+  <main id="view" aria-live="polite"></main>
+
+  <nav class="tabbar" aria-label="Hauptnavigation">
+    <button type="button" data-tab="spieler">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm-6 9c0-3.3 2.7-6 6-6s6 2.7 6 6M15.5 4.3a3.5 3.5 0 0 1 0 6.4M17.5 14.4c2.1.8 3.5 2.9 3.5 5.6"/></svg>
+      <span>Spieler</span>
+    </button>
+    <button type="button" data-tab="spielplan">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14v14H5V6Zm0 4.5h14M9 3v5m6-5v5m-7 6.5h3m2 0h3m-8 3h3"/></svg>
+      <span>Spielplan</span>
+    </button>
+    <button type="button" data-tab="tabelle">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4h8v5a4 4 0 0 1-8 0V4Zm0 2H5v1a3 3 0 0 0 3 3m8-4h3v1a3 3 0 0 1-3 3m-4 3v4m-4 3h8l-1-3H9l-1 3Z"/></svg>
+      <span>Tabelle</span>
+    </button>
+  </nav>
+
+  <dialog class="sheet" id="score-sheet" aria-labelledby="score-title"></dialog>
+  <dialog class="sheet" id="confirm-sheet" aria-labelledby="confirm-title"></dialog>
+
+  <script src="schedule.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

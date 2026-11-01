@@ -1,0 +1,14 @@
+{
+  "name": "americano",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Padel-Americano: Spieler, Spielplan und Tabelle fürs Handy",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/schedule.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
